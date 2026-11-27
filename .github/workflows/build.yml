@@ -48,6 +48,12 @@ jobs:
           fi
       - name: サイトを作る
         run: python3 build.py render data/jobs.json site
+      - name: 増えた求人・終わった求人を調べる
+        run: python3 build.py diff site diff.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diff
+          path: diff.json
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
@@ -62,3 +68,13 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: diff
+      - name: Googleへ知らせる（鍵が設定されているときだけ）
+        env:
+          GOOGLE_INDEXING_KEY: ${{ secrets.GOOGLE_INDEXING_KEY }}
+        run: |
+          if [ -n "$GOOGLE_INDEXING_KEY" ]; then pip install --quiet google-auth requests; fi
+          python3 notify.py diff.json

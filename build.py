@@ -473,6 +473,20 @@ def main():
         os.makedirs(os.path.dirname(os.path.abspath(sys.argv[3])), exist_ok=True)
         json.dump(jobs, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
         print("載せる求人:", len(jobs), "／ 載せない内訳:", json.dumps(skip, ensure_ascii=False))
+    elif mode == "diff":  # 公開中のサイトと比べて、増えた求人・終わった求人のURLを出す
+        new = set(json.load(open(os.path.join(sys.argv[2], "posted.json"))))
+        try:
+            with urllib.request.urlopen(BASE + "posted.json", timeout=20) as r:
+                old = set(json.loads(r.read().decode("utf-8")))
+        except Exception:
+            old = None
+        if old is None or len(old) < 300:  # 前回の一覧が読めないときは、通知しない
+            d = {"added": [], "removed": []}
+        else:
+            d = {"added": [BASE + "job/%s.html" % i for i in sorted(new - old)],
+                 "removed": [BASE + "job/%s.html" % i for i in sorted(old - new)]}
+        json.dump(d, open(sys.argv[3], "w"))
+        print("増えた求人 %d件 ／ 終わった求人 %d件" % (len(d["added"]), len(d["removed"])))
     elif mode == "render":
         jobs = json.load(open(sys.argv[2], encoding="utf-8"))
         if len(jobs) < 300:

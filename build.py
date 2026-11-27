@@ -457,6 +457,10 @@ def render(jobs, out):
     with open(os.path.join(out, "posted.json"), "w") as f:
         json.dump(newposted, f)
     open(os.path.join(out, ".nojekyll"), "w").close()
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    if os.path.isdir(here):  # Googleの所有確認ファイルなど、そのまま置くもの
+        for name in os.listdir(here):
+            shutil.copy(os.path.join(here, name), os.path.join(out, name))
     return len(jobs), len(by)
 
 

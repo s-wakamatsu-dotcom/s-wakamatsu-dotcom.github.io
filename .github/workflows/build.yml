@@ -26,7 +26,16 @@ jobs:
           SHEET_URL: ${{ secrets.SHEET_URL }}
         run: |
           if [ -n "$SHEET_URL" ]; then
-            curl -sSL --fail "$SHEET_URL" -o "$RUNNER_TEMP/raw.json"
+            # 貼られたURLの形だけを確かめる（中身は表示しない）
+            U="$SHEET_URL"
+            echo "URLの長さ: ${#U}"
+            case "$U" in "https://script.google.com/macros/s/"*"/exec?k="*) echo "URLの形: 本番用（/exec?k=）";; *) echo "URLの形: 想定とちがう";; esac
+            case "$U" in *"/dev"*) echo "→ テスト用（/dev）のURLが入っています";; esac
+            case "$U" in *" "*|*$'\n'*|*$'\t'*) echo "→ 空白や改行が混ざっています";; esac
+            case "$U" in "https://"*) ;; *) echo "→ https:// で始まっていません（前に余計な文字があります）";; esac
+            K="${U##*k=}"; echo "合言葉の長さ: ${#K}（正しくは64）"
+            CODE=$(curl -sSL "$U" -o "$RUNNER_TEMP/raw.json" -w "%{http_code}" || true)
+            echo "窓口の応答コード: $CODE"
             if [ "$(head -c 10 "$RUNNER_TEMP/raw.json")" != '{"values":' ]; then
               echo "読み取り窓口から求人データが返ってきませんでした。返ってきたページの種類:"
               grep -o '<title>[^<]*</title>' "$RUNNER_TEMP/raw.json" | head -1 || true

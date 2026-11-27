@@ -297,13 +297,17 @@ h1{font-size:22px;line-height:1.45;margin:6px 0 10px}h2{font-size:16px;margin:0 
 .pay{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:12px 0}.pay div{background:#fff7ef;border-radius:12px;padding:10px;text-align:center}
 .pay b{display:block;font-size:22px;color:var(--accent)}.pay small{color:var(--sub);font-weight:700}
 dl{display:grid;grid-template-columns:7em 1fr;gap:8px 12px;margin:0}dt{font-weight:800;color:var(--sub);font-size:14px}dd{margin:0;white-space:pre-wrap;font-size:14px}
-.body{white-space:pre-wrap;font-size:14.5px}
+.body{white-space:pre-wrap;font-size:14.5px}.sup{margin:0;padding-left:1.2em;font-size:14.5px}.sup li{margin:2px 0}
 .apply{display:block;text-align:center;background:linear-gradient(135deg,#19d36a,#06b04b);color:#fff;font-weight:900;font-size:18px;padding:16px;border-radius:14px;text-decoration:none;box-shadow:0 5px 0 #048a3a;margin:18px 0 6px}
 .note{font-size:12px;color:var(--sub)}footer{font-size:12px;color:var(--sub);text-align:center;padding:24px 16px 90px}
 .list a.item{display:block;background:#fff;border-radius:14px;padding:14px 16px;margin:10px 0;text-decoration:none;color:var(--ink);box-shadow:0 3px 12px rgba(16,42,60,.06)}
 .list .t{font-weight:800}.list .m{color:var(--accent);font-weight:900}.prefs{display:flex;flex-wrap:wrap;gap:8px}.prefs a{background:#fff;border:1px solid var(--line);border-radius:999px;padding:6px 12px;text-decoration:none;font-weight:700;font-size:14px}
 .dock{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.96);padding:10px 16px;box-shadow:0 -4px 16px rgba(0,0,0,.08)}.dock .apply{margin:0;font-size:16px;padding:12px}
 """
+# 求人ページに載せる京栄センターのサポート（言い切ってよい内容だけ）
+SUPPORT = ["就業にかかる費用は京栄センターが負担します", "携帯代は会社負担", "履歴書なしで応募できます",
+           "最短で当日・翌日に入寮できます", "寮は個室・家具家電付き", "敷金礼金・引っ越し代は0円",
+           "日払い・前払いができるお仕事もあります"]
 FOOT = ("<footer>株式会社京栄センター（有料職業紹介事業 許可番号 23-ユ-301956）<br>"
         "ご紹介は無料です。求職者の方から手数料をいただくことはありません。<br>"
         "掲載内容は毎日更新しています。募集が終了した求人は掲載を終了します。</footer>")
@@ -360,20 +364,16 @@ def job_page(j, posted):
     for label, k in (("寮", "dorm"), ("特典", "bonus"), ("勤務時間", "hours"), ("休日", "holiday")):
         if j[k]:
             desc_parts.append("<p>【%s】<br>%s</p>" % (label, e(j[k]).replace("\n", "<br>")))
-    if j["hourly"]:
-        sal = {"@type": "QuantitativeValue", "value": j["hourly"], "unitText": "HOUR"}
-    else:
-        sal = {"@type": "QuantitativeValue", "value": j["monthly"], "unitText": "MONTH"}
-    ld = {"@context": "https://schema.org/", "@type": "JobPosting", "title": t,
+    desc_parts.append("<p>【サポート】<br>%s</p>" % "<br>".join("・" + e(x) for x in SUPPORT))
+    # Googleのルール: タイトルは職務名だけ／雇用主の名前を伏せる紹介会社は confidential／雇用主以外は給与欄を入れない
+    ld = {"@context": "https://schema.org/", "@type": "JobPosting", "title": j["cat"],
           "description": "".join(desc_parts), "datePosted": posted,
           "validThrough": (TODAY + datetime.timedelta(days=30)).isoformat() + "T23:59:59+09:00",
           "employmentType": "TEMPORARY",
-          "hiringOrganization": {"@type": "Organization", "name": "株式会社京栄センター", "sameAs": LP},
+          "hiringOrganization": {"@type": "Organization", "name": "confidential"},
           "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": j["city"],
                                                         "addressRegion": j["pref"], "addressCountry": "JP"}},
-          "identifier": {"@type": "PropertyValue", "name": "京栄センター", "value": j["id"]},
-          "directApply": False,
-          "baseSalary": {"@type": "MonetaryAmount", "currency": "JPY", "value": sal}}
+          "directApply": False}
     pay = ""
     if j["hourly"]:
         pay += "<div><small>時給</small><b>%s</b></div>" % yen(j["hourly"])
@@ -391,11 +391,13 @@ def job_page(j, posted):
         '<p class="note">6つの質問に答えると、担当者がLINEまたはお電話でご案内します。</p></div>'
         '<div class="card"><h2>お仕事の内容</h2><div class="body">%s</div></div>'
         '<div class="card"><h2>募集要項</h2><dl>%s</dl></div>'
+        '<div class="card"><h2>京栄センターのサポート</h2><ul class="sup">%s</ul></div>'
         '<div class="card"><h2>京栄センターについて</h2><p>寮付きのお仕事専門の職業紹介会社です。赴任の交通費、荷物の送料、'
         '携帯が止まっている方の手続きなど、働き始めるまでをまとめてサポートします。紹介先の会社名は、ご相談のあとに担当者からお伝えします。</p>'
         '<p><a href="../%s">%sのほかの寮付き求人を見る</a></p></div>'
         '<div class="dock"><a class="apply" href="%s">LINE・電話で無料相談</a></div>'
-    ) % (e(j["pref"]), e(j["city"]), e(t), tags, pay, e(apply_url), e(j["job"]), dl, pc, e(j["pref"]), e(apply_url))
+    ) % (e(j["pref"]), e(j["city"]), e(t), tags, pay, e(apply_url), e(j["job"]), dl,
+         "".join("<li>%s</li>" % e(x) for x in SUPPORT), pc, e(j["pref"]), e(apply_url))
     title = "%s｜%s%s｜%s 寮付き｜京栄センター" % (t, j["pref"], j["city"], pay_line(j).split("／")[0])
     desc = "%s%sの%s。%s。寮付き。ご紹介は無料です。" % (j["pref"], j["city"], t, pay_line(j).replace("／", "、"))
     return page(title, desc, url, body, ld, "../")

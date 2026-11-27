@@ -21,6 +21,7 @@ def main():
     s = AuthorizedSession(creds)
     # 終わった求人を先に知らせる（検索に残り続けるのを防ぐほうが大事）
     items = [(u, "URL_DELETED") for u in diff["removed"]] + [(u, "URL_UPDATED") for u in diff["added"]]
+    items += [(u, "URL_UPDATED") for u in diff.get("backlog", [])]
     if not items and diff.get("sample"):  # 増減がない日は、つながっているかの確認として1件だけ送る
         items = [(diff["sample"], "URL_UPDATED")]
         print("増減がないので、確認用に1件だけ送ります。")

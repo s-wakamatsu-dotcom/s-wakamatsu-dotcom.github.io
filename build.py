@@ -706,8 +706,22 @@ def main():
             d = {"added": [BASE + "job/%s.html" % i for i in sorted(new - old)],
                  "removed": [BASE + "job/%s.html" % i for i in sorted(old - new)]}
         d["sample"] = BASE + "job/%s.html" % sorted(new)[0] if new else ""
+        # まだGoogleへ知らせていない求人を、1日の上限の空きを使って少しずつ知らせる（全部終わるまで毎日）
+        try:
+            with urllib.request.urlopen(BASE + "notified.json", timeout=20) as r:
+                done = set(json.loads(r.read().decode("utf-8")))
+        except Exception:
+            done = set()
+        room = max(0, 170 - len(d["added"]) - len(d["removed"]))
+        if os.environ.get("GITHUB_EVENT_NAME") == "push":  # 1日の上限を超えないよう、まとめて送るのは毎朝の回だけ
+            room = 0
+        added_ids = set(u.rsplit("/", 1)[1][:-5] for u in d["added"])
+        rest = sorted(new - done - added_ids)
+        back = rest[:room]
+        d["backlog"] = [BASE + "job/%s.html" % i for i in back]
+        json.dump(sorted((done & new) | added_ids | set(back)), open(os.path.join(sys.argv[2], "notified.json"), "w"))
         json.dump(d, open(sys.argv[3], "w"))
-        print("増えた求人 %d件 ／ 終わった求人 %d件" % (len(d["added"]), len(d["removed"])))
+        print("増えた求人 %d件 ／ 終わった求人 %d件 ／ まだ知らせていない求人 %d件（今日 %d件送る）" % (len(d["added"]), len(d["removed"]), len(rest), len(back)))
     elif mode == "push":
         try:
             push_sheet(json.load(open(sys.argv[2], encoding="utf-8")), os.environ.get("SHEET_URL", ""))

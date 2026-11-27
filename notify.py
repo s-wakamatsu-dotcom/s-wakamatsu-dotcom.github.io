@@ -3,7 +3,7 @@
 """増えた求人・終わった求人を、その日のうちにGoogleへ知らせる（Indexing API）。
 
 使い方: python notify.py diff.json
-鍵（GOOGLE_INDEXING_KEY）が設定されていないときは何もしない。失敗しても公開は止めない。
+鍵ファイルは使わず、GitHubの自動実行だけに許可した「鍵なし」のつなぎ方で認証する。失敗しても公開は止めない。
 """
 import os, sys, json
 
@@ -12,17 +12,18 @@ LIMIT = 180  # Googleの初期の上限は1日200件。余裕を見て180件ま�
 def main():
     diff = json.load(open(sys.argv[1], encoding="utf-8"))
     print("増えた求人 %d件 ／ 終わった求人 %d件" % (len(diff["added"]), len(diff["removed"])))
-    key = os.environ.get("GOOGLE_INDEXING_KEY", "").strip()
-    if not key:
-        print("Googleへの通知用の鍵が未設定なので、通知はしません。")
+    if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        print("Googleとのつなぎ込みが未設定なので、通知はしません。")
         return
-    from google.oauth2 import service_account
+    import google.auth
     from google.auth.transport.requests import AuthorizedSession
-    creds = service_account.Credentials.from_service_account_info(
-        json.loads(key), scopes=["https://www.googleapis.com/auth/indexing"])
+    creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/indexing"])
     s = AuthorizedSession(creds)
     # 終わった求人を先に知らせる（検索に残り続けるのを防ぐほうが大事）
     items = [(u, "URL_DELETED") for u in diff["removed"]] + [(u, "URL_UPDATED") for u in diff["added"]]
+    if not items and diff.get("sample"):  # 増減がない日は、つながっているかの確認として1件だけ送る
+        items = [(diff["sample"], "URL_UPDATED")]
+        print("増減がないので、確認用に1件だけ送ります。")
     ok = ng = 0
     for url, kind in items[:LIMIT]:
         r = s.post("https://indexing.googleapis.com/v3/urlNotifications:publish", json={"url": url, "type": kind})

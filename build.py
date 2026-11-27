@@ -485,6 +485,7 @@ def main():
         else:
             d = {"added": [BASE + "job/%s.html" % i for i in sorted(new - old)],
                  "removed": [BASE + "job/%s.html" % i for i in sorted(old - new)]}
+        d["sample"] = BASE + "job/%s.html" % sorted(new)[0] if new else ""
         json.dump(d, open(sys.argv[3], "w"))
         print("増えた求人 %d件 ／ 終わった求人 %d件" % (len(d["added"]), len(d["removed"])))
     elif mode == "render":

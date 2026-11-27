@@ -27,6 +27,13 @@ jobs:
         run: |
           if [ -n "$SHEET_URL" ]; then
             curl -sSL --fail "$SHEET_URL" -o "$RUNNER_TEMP/raw.json"
+            if [ "$(head -c 10 "$RUNNER_TEMP/raw.json")" != '{"values":' ]; then
+              echo "読み取り窓口から求人データが返ってきませんでした。返ってきたページの種類:"
+              grep -o '<title>[^<]*</title>' "$RUNNER_TEMP/raw.json" | head -1 || true
+              head -c 30 "$RUNNER_TEMP/raw.json" | tr -c 'a-zA-Z{}":<>!' '.'; echo
+              rm -f "$RUNNER_TEMP/raw.json"
+              exit 1
+            fi
             python3 build.py sanitize "$RUNNER_TEMP/raw.json" data/jobs.json
             rm -f "$RUNNER_TEMP/raw.json"
           fi

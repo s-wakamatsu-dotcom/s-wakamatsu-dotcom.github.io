@@ -9,7 +9,7 @@
 raw.json は {"values": [[見出し行], [1行目], ...]} か、その行だけの配列。
 元の案件一覧（派遣会社名・派遣先名・紹介料・応募条件を含む）は、この置き場所には置かない。
 """
-import sys, os, re, json, html, hashlib, datetime, shutil, unicodedata, urllib.request
+import sys, os, re, json, html, hashlib, datetime, shutil, time, unicodedata, urllib.request
 
 BASE = os.environ.get("SITE_BASE", "https://s-wakamatsu-dotcom.github.io/")
 OUBO = "https://kyoei-ryo.netlify.app/oubo/"
@@ -202,6 +202,63 @@ def clean_text(text, own_tokens, rx):
     return "\n".join(out)
 
 
+HYPE = re.compile(r"円|万|特典|手取り|収入|稼|寮|入社|歓迎|応募|未経験|安心|研修|オススメ|おすすめ|魅力|活躍|キャリア|成長|還元|転職|お金|"
+                  r"支給|メニュー|食堂|ワンコイン|課金|貯金|月給|時給|賞与|連休|休み|家族|スーパー|コンビニ|当社|弊社|スタッフ|先輩|正社員|面接|選考")
+_PAGE_CACHE = {}
+
+
+def fetch_page(url):
+    if url in _PAGE_CACHE:
+        return _PAGE_CACHE[url]
+    text = ""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; kyoei-jobs-builder)"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            text = r.read(600000).decode("utf-8", "replace")
+        time.sleep(0.5)
+    except Exception:
+        text = ""
+    _PAGE_CACHE[url] = text
+    return text
+
+
+def job_from_page(html_text, codes, toks, rx):
+    """派遣会社の求人ページから「仕事内容」の欄を取り出し、作業内容を説明している行だけ残す。
+    ページにお仕事Noが書かれていないとき（別の求人のページだったとき）は使わない。"""
+    if not html_text:
+        return ""
+    plain = nfkc(re.sub(r"<[^>]+>", " ", html_text)).lower()
+    if not any(c and nfkc(c).lower() in plain for c in codes):
+        return ""
+    m = re.search(r"<th[^>]*>\s*お?仕事内容\s*</th>\s*<td[^>]*>(.*?)</td>", html_text, re.S)
+    if not m:
+        return ""
+    body = re.sub(r"<br\s*/?>|</p>|</h\d>|</li>|</div>", "\n", m.group(1))
+    body = html.unescape(re.sub(r"<[^>]+>", "", body))
+    out = []
+    for line in body.split("\n"):
+        line = norm(line)
+        if not line:
+            continue
+        if re.fullmatch(r"[〜~・\-－ー=＝\s]{4,}", line):
+            if out:
+                break  # 区切り線より下は宣伝文が多いので見ない
+            continue
+        line = re.sub(r"[!♪☆★◎♥]+", "", line)
+        line = re.sub(r"(\.{3}|…)?▼", "：", line).strip()
+        if line in ("仕事概要", "お仕事内容", "仕事内容", "業務内容"):
+            continue
+        if len(line) < 3 or len(line) > 80 or HYPE.search(line) or re.match(r"^[【＜<\[]", line) or line.endswith("?"):
+            continue
+        line = clean_text(line, toks, rx)
+        if line:
+            out.append(line)
+        if len(out) >= 12:
+            break
+    text = "\n".join(out)
+    return text if len(text) >= 25 else ""
+
+
 def category(job):
     for pat, label in CATS:
         if re.search(pat, job):
@@ -209,7 +266,9 @@ def category(job):
     return "製造スタッフ"
 
 
-def sanitize(values):
+def sanitize(values, urls=None):
+    urls = urls or {}
+    fetched = [0, 0]
     head = [str(x) for x in values[0]]
     if head and head[0] == "派遣会社":
         values = values[1:]
@@ -246,8 +305,20 @@ def sanitize(values):
         if not hourly and not monthly:
             drop("給与なし"); continue
         toks = name_tokens(r["name"])
+        nodorm = r["dorm"] == "無し"
         job = clean_text(r["job"], toks, rx)
         job = re.sub(r"(…|\.\.\.)+$", "", job).strip()  # 途中で切れた文末の「…」は外す
+        if len(job) < 8 and fetched[0] < 400:
+            codes = [c.strip() for c in re.split(r"[/／\n、,]", r["no"]) if c.strip()]
+            for c in codes:
+                u = urls.get(r["agency"] + "|" + c)
+                if u:
+                    fetched[0] += 1
+                    got = job_from_page(fetch_page(u), [c], toks, rx)
+                    if got:
+                        job = got
+                        fetched[1] += 1
+                        break
         short = len(job) < 8
         env = []
         for line in r["cond"].split("\n"):
@@ -268,7 +339,7 @@ def sanitize(values):
             shift = ""
         cat = category(job)
         if short:  # 仕事内容がほぼ空のときは、職種名から最低限の説明を付ける
-            job = (job + "\n" if job else "") + "寮付きの%sのお仕事です。くわしい内容は担当者からご案内します。" % cat.replace("スタッフ", "")
+            job = (job + "\n" if job else "") + ("" if nodorm else "寮付きの") + "%sのお仕事です。くわしい内容は担当者からご案内します。" % cat.replace("スタッフ", "")
         if env:
             job = job + "\n【職場の補足】\n" + "\n".join(env[:4])
         key = (r["pref"], city, cat, shift, hourly, monthly, job[:60])
@@ -281,7 +352,8 @@ def sanitize(values):
         tags = []
         if re.search(r"寮費無料[:：]?\s*[〇○◯◎]|寮費[:：]\s*無料|^寮費無料$", r["dormfee"], re.M) and \
                 not re.search(r"寮費無料[:：]?\s*[✕×△▲]", r["dormfee"]):
-            tags.append("寮費無料")
+            if not nodorm:
+                tags.append("寮費無料")
         if re.search(r"祝", bonus) and re.search(r"\d", bonus) and not re.search(r"[✕×✖]|なし|無し", bonus):
             tags.append("入社祝い金あり")
         else:
@@ -304,15 +376,17 @@ def sanitize(values):
         out.append({
             "id": jid, "pref": r["pref"], "city": city, "cat": cat, "shift": shift,
             "hourly": hourly, "monthly": monthly, "job": job, "tags": tags,
-            "dorm": dormfee, "bonus": bonus,
+            "dorm": "" if nodorm else dormfee, "bonus": bonus,
             "hours": clean_text(r["hours"], toks, rx), "holiday": clean_text(r["holiday"], toks, rx),
-            "access": clean_text(r["access"], toks, rx), "emp": emp, "etype": etype,
+            "access": clean_text(r["access"], toks, rx), "emp": emp, "etype": etype, "nodorm": nodorm,
         })
     ids = {}
     for j in out:  # 同じ番号が出たら枝番を付ける
         n = ids.get(j["id"], 0); ids[j["id"]] = n + 1
         if n:
             j["id"] = j["id"][:8] + "%02d" % n
+    if fetched[0]:
+        print("派遣会社の求人ページから仕事内容を補った求人: %d件（見に行った %d件）" % (fetched[1], fetched[0]))
     return out, skip
 
 
@@ -444,7 +518,8 @@ def man(n):
 
 
 def title_of(j):
-    return "%s（寮付き%s）" % (j["cat"], "・" + j["shift"] if j["shift"] else "")
+    bits = ([] if j.get("nodorm") else ["寮付き"]) + ([j["shift"]] if j["shift"] else [])
+    return j["cat"] + ("（%s）" % "・".join(bits) if bits else "")
 
 
 def pay_line(j):
@@ -456,7 +531,7 @@ def pay_line(j):
     return "／".join(p)
 
 
-def page(title, desc, canon, body, ld=None, head_link="./"):
+def page(title, desc, canon, body, ld=None, head_link="./", site="京栄センター 寮付きのお仕事"):
     ldtag = ""
     if ld:
         ldtag = '<script type="application/ld+json">%s</script>' % json.dumps(ld, ensure_ascii=False).replace("</", "<\\/")
@@ -464,8 +539,8 @@ def page(title, desc, canon, body, ld=None, head_link="./"):
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             "<title>%s</title><meta name=\"description\" content=\"%s\"><link rel=\"canonical\" href=\"%s\">%s"
             '<link rel="stylesheet" href="%sstyle.css"></head><body>'
-            '<header><a href="%s">京栄センター 寮付きのお仕事</a></header><main class="wrap">%s</main>%s</body></html>'
-            ) % (e(title), e(desc), e(canon), ldtag, head_link, head_link, body, FOOT)
+            '<header><a href="%s">%s</a></header><main class="wrap">%s</main>%s</body></html>'
+            ) % (e(title), e(desc), e(canon), ldtag, head_link, head_link, e(site), body, FOOT)
 
 
 def item(j, prefix=""):
@@ -487,7 +562,8 @@ def job_page(j, posted):
     for label, k in (("寮", "dorm"), ("特典", "bonus"), ("勤務時間", "hours"), ("休日", "holiday")):
         if j[k]:
             desc_parts.append("<p>【%s】<br>%s</p>" % (label, e(j[k]).replace("\n", "<br>")))
-    desc_parts.append("<p>【サポート】<br>%s</p>" % "<br>".join("・" + e(x) for x in SUPPORT))
+    support = [x for x in SUPPORT if not (j.get("nodorm") and re.search(r"寮|敷金", x))]
+    desc_parts.append("<p>【サポート】<br>%s</p>" % "<br>".join("・" + e(x) for x in support))
     # Googleのルール: タイトルは職務名だけ／雇用主の名前を伏せる紹介会社は confidential／雇用主以外は給与欄を入れない
     ld = {"@context": "https://schema.org/", "@type": "JobPosting", "title": j["cat"],
           "description": "".join(desc_parts), "datePosted": posted,
@@ -518,16 +594,19 @@ def job_page(j, posted):
         '<div class="card"><h2>この職種について</h2>%s<p class="note">職種の一般的な説明です。くわしい内容は担当者からご案内します。</p></div>'
         '<div class="card"><h2>募集要項</h2><dl>%s</dl></div>'
         '<div class="card"><h2>京栄センターのサポート</h2><ul class="sup">%s</ul></div>'
-        '<div class="card"><h2>京栄センターについて</h2><p>寮付きのお仕事専門の職業紹介会社です。赴任の交通費、荷物の送料、'
+        '<div class="card"><h2>京栄センターについて</h2><p>%s赴任の交通費、荷物の送料、'
         '携帯が止まっている方の手続きなど、働き始めるまでをまとめてサポートします。紹介先の会社名は、ご相談のあとに担当者からお伝えします。</p>'
-        '<p><a href="../%s">%sのほかの寮付き求人を見る</a></p></div>'
+        '<p><a href="../%s">%sのほかの%sを見る</a></p></div>'
         '<div class="dock"><a class="apply" href="%s">LINE・電話で無料相談</a></div>'
     ) % (e(j["pref"]), e(j["city"]), e(t), tags, pay, e(apply_url), e(j["job"]),
          "".join("<p>%s</p>" % e(x) for x in about), dl,
-         "".join("<li>%s</li>" % e(x) for x in SUPPORT), pc, e(j["pref"]), e(apply_url))
-    title = "%s｜%s%s｜%s 寮付き｜京栄センター" % (t, j["pref"], j["city"], pay_line(j).split("／")[0])
-    desc = "%s%sの%s。%s。寮付き。ご紹介は無料です。" % (j["pref"], j["city"], t, pay_line(j).replace("／", "、"))
-    return page(title, desc, url, body, ld, "../")
+         "".join("<li>%s</li>" % e(x) for x in support),
+         "工場・製造のお仕事をご紹介している職業紹介会社です。" if j.get("nodorm") else "寮付きのお仕事専門の職業紹介会社です。",
+         pc, e(j["pref"]), "求人" if j.get("nodorm") else "寮付き求人", e(apply_url))
+    nd = j.get("nodorm")
+    title = "%s｜%s%s｜%s%s｜京栄センター" % (t, j["pref"], j["city"], pay_line(j).split("／")[0], "" if nd else " 寮付き")
+    desc = "%s%sの%s。%s。%sご紹介は無料です。" % (j["pref"], j["city"], t, pay_line(j).replace("／", "、"), "" if nd else "寮付き。")
+    return page(title, desc, url, body, ld, "../", "京栄センター お仕事紹介" if nd else "京栄センター 寮付きのお仕事")
 
 
 def render(jobs, out):
@@ -556,20 +635,22 @@ def render(jobs, out):
         if p not in by:
             continue
         pc = "p%02d.html" % (PREFS.index(p) + 1)
-        body = '<h1>%sの寮付きのお仕事（%d件）</h1><div class="list">%s</div><p><a href="./">ほかの都道府県を見る</a></p>' % (
-            e(p), len(by[p]), "".join(item(j) for j in by[p]))
+        nd_n = sum(1 for j in by[p] if not j.get("nodorm"))
+        body = '<h1>%sの工場・製造のお仕事（%d件）</h1><p>うち寮付きは%d件です。</p><div class="list">%s</div><p><a href="./">ほかの都道府県を見る</a></p>' % (
+            e(p), len(by[p]), nd_n, "".join(item(j) for j in by[p]))
         with open(os.path.join(out, pc), "w", encoding="utf-8") as f:
-            f.write(page("%sの寮付き求人（%d件）｜京栄センター" % (p, len(by[p])),
-                         "%sの寮付きのお仕事%d件。工場・倉庫のお仕事を中心に掲載。ご紹介は無料です。" % (p, len(by[p])),
+            f.write(page("%sの工場・製造の求人（%d件）｜京栄センター" % (p, len(by[p])),
+                         "%sの工場・倉庫のお仕事%d件。寮付きのお仕事を中心に掲載。ご紹介は無料です。" % (p, len(by[p])),
                          BASE + pc, body))
         urls.append(BASE + pc)
     prefs = "".join('<a href="p%02d.html">%s（%d）</a>' % (PREFS.index(p) + 1, e(p), len(by[p])) for p in PREFS if p in by)
-    body = ('<h1>寮付きのお仕事を探す</h1><p>全国の寮付きのお仕事を%d件掲載しています。ご紹介は無料です。</p>'
+    body = ('<h1>寮付きのお仕事を探す</h1><p>全国の工場・製造のお仕事を%d件掲載しています（うち寮付き%d件）。ご紹介は無料です。</p>'
             '<div class="card"><h2>都道府県から探す</h2><div class="prefs">%s</div></div>'
-            '<h2>月収の高いお仕事</h2><div class="list">%s</div>') % (len(jobs), prefs, "".join(item(j) for j in jobs[:80]))
+            '<h2>月収の高いお仕事</h2><div class="list">%s</div>') % (
+                len(jobs), sum(1 for j in jobs if not j.get("nodorm")), prefs, "".join(item(j) for j in jobs[:80]))
     with open(os.path.join(out, "index.html"), "w", encoding="utf-8") as f:
         f.write(page("寮付きのお仕事を探す｜京栄センター",
-                     "全国の寮付きのお仕事を%d件掲載。赴任の交通費や携帯の手続きまでサポート。ご紹介は無料です。" % len(jobs), BASE, body))
+                     "寮付きを中心に、全国の工場・製造のお仕事を%d件掲載。赴任の交通費や携帯の手続きまでサポート。ご紹介は無料です。" % len(jobs), BASE, body))
     with open(os.path.join(out, "404.html"), "w", encoding="utf-8") as f:
         f.write(page("この求人は掲載を終了しました｜京栄センター", "この求人は掲載を終了しました。", BASE + "404.html",
                      '<div class="card"><h1>この求人は掲載を終了しました</h1><p>募集が終わったか、内容が変わった可能性があります。</p>'
@@ -599,7 +680,7 @@ def main():
     if mode == "sanitize":
         raw = json.load(open(sys.argv[2], encoding="utf-8"))
         values = raw["values"] if isinstance(raw, dict) else raw
-        jobs, skip = sanitize(values)
+        jobs, skip = sanitize(values, raw.get("urls") if isinstance(raw, dict) else None)
         ov = raw.get("overrides", {}) if isinstance(raw, dict) else {}
         n = apply_overrides(jobs, ov)
         print("シートでの修正: %d件（うち掲載しない %d件）" % (n, sum(1 for j in jobs if j["hide"])))

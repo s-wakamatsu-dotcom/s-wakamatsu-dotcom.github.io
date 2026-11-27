@@ -418,7 +418,9 @@ def apply_overrides(jobs, ov):
 def push_sheet(jobs, url):
     """サイトに出している内容を①シートへ書き出す（失敗してもサイトの公開は止めない）。"""
     rows = []
-    for j in sorted(jobs, key=lambda j: (PREFS.index(j["pref"]), j["city"], j["cat"])):
+    # 仕事内容が定型文だけの求人（書き足してほしいもの）を、シートのいちばん上に集める
+    for j in sorted(jobs, key=lambda j: (0 if "くわしい内容は担当者からご案内します" in j["job"] else 1,
+                                         PREFS.index(j["pref"]), j["city"], j["cat"])):
         rows.append([j["id"], BASE + "job/%s.html" % j["id"], j["pref"], j["city"], j["cat"], j["shift"],
                      j["hourly"] or "", j["monthly"] or "", j.get("emp", ""), "・".join(j["tags"]),
                      j["job"], j["dorm"], j["bonus"], j["hours"], j["holiday"], j["access"]])

@@ -270,13 +270,27 @@ def sanitize(values):
             tags.append("入社祝い金あり")
         else:
             bonus = ""
+        # 雇用形態（案件一覧の応募条件の欄に「雇用：…」と書かれているものだけ）
+        emp, etype = "", ""
+        m = re.search(r"雇用[:：]\s*([^\n]+)", r["cond"])
+        if m:
+            v = nfkc(m.group(1))
+            if re.search(r"正社員|無期", v):
+                emp, etype = "無期雇用（期間の定めなし）", "FULL_TIME"
+            elif re.search(r"有期|契約|期間", v):
+                emp, etype = "有期雇用", "TEMPORARY"
+        if "未経験OK" in r["cond"]:
+            tags.append("未経験OK")
+        if re.search(r"(通勤|車バイク)[:：][^\n]*(車|マイカー)|車通勤", nfkc(r["access"])) and \
+                not re.search(r"車[^\n]{0,4}(不可|NG|×|✕)", nfkc(r["access"])):
+            tags.append("車通勤OK")
         jid = hashlib.sha1("|".join([r["agency"], r["no"], r["name"], r["shift"], city]).encode()).hexdigest()[:10]
         out.append({
             "id": jid, "pref": r["pref"], "city": city, "cat": cat, "shift": shift,
             "hourly": hourly, "monthly": monthly, "job": job, "tags": tags,
             "dorm": dormfee, "bonus": bonus,
             "hours": clean_text(r["hours"], toks, rx), "holiday": clean_text(r["holiday"], toks, rx),
-            "access": clean_text(r["access"], toks, rx),
+            "access": clean_text(r["access"], toks, rx), "emp": emp, "etype": etype,
         })
     ids = {}
     for j in out:  # 同じ番号が出たら枝番を付ける
@@ -284,6 +298,46 @@ def sanitize(values):
         if n:
             j["id"] = j["id"][:8] + "%02d" % n
     return out, skip
+
+
+def apply_overrides(jobs, ov):
+    """①シートの修正用の列（掲載しない／タイトル修正／仕事内容修正／寮・特典修正）を反映する。"""
+    n = 0
+    for j in jobs:
+        o = ov.get(j["id"])
+        j["hide"] = False
+        if not o:
+            continue
+        n += 1
+        if str(o.get("hide", "")).strip():
+            j["hide"] = True
+        if str(o.get("title", "")).strip():
+            j["cat"] = norm(o["title"])
+        if str(o.get("job", "")).strip():
+            j["job"] = "\n".join(norm(x) for x in str(o["job"]).split("\n") if norm(x))
+        if str(o.get("dorm", "")).strip():
+            j["dorm"] = "\n".join(norm(x) for x in str(o["dorm"]).split("\n") if norm(x))
+            j["bonus"] = ""
+    return n
+
+
+def push_sheet(jobs, url):
+    """サイトに出している内容を①シートへ書き出す（失敗してもサイトの公開は止めない）。"""
+    rows = []
+    for j in sorted(jobs, key=lambda j: (PREFS.index(j["pref"]), j["city"], j["cat"])):
+        rows.append([j["id"], BASE + "job/%s.html" % j["id"], j["pref"], j["city"], j["cat"], j["shift"],
+                     j["hourly"] or "", j["monthly"] or "", j.get("emp", ""), "・".join(j["tags"]),
+                     j["job"], j["dorm"], j["bonus"], j["hours"], j["holiday"], j["access"]])
+    base, _, q = url.partition("?")
+    key = q.split("k=", 1)[1] if "k=" in q else ""
+    body = json.dumps({"k": key, "rows": rows}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(base, data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=300) as r:
+        text = r.read().decode("utf-8", "replace")
+    if text.startswith("{") and '"ok"' in text:
+        print("①シートに %d件を書き出しました。" % len(rows))
+    else:
+        print("①シートへの書き出しはできませんでした（読み取り窓口が古い版のままの可能性）。")
 
 
 # ---------- ここからページ作り ----------
@@ -369,11 +423,12 @@ def job_page(j, posted):
     ld = {"@context": "https://schema.org/", "@type": "JobPosting", "title": j["cat"],
           "description": "".join(desc_parts), "datePosted": posted,
           "validThrough": (TODAY + datetime.timedelta(days=30)).isoformat() + "T23:59:59+09:00",
-          "employmentType": "TEMPORARY",
           "hiringOrganization": {"@type": "Organization", "name": "confidential"},
           "jobLocation": {"@type": "Place", "address": {"@type": "PostalAddress", "addressLocality": j["city"],
                                                         "addressRegion": j["pref"], "addressCountry": "JP"}},
           "directApply": False}
+    if j.get("etype"):
+        ld["employmentType"] = j["etype"]
     pay = ""
     if j["hourly"]:
         pay += "<div><small>時給</small><b>%s</b></div>" % yen(j["hourly"])
@@ -382,8 +437,9 @@ def job_page(j, posted):
     tags = "".join('<span class="tag">%s</span>' % e(x) for x in j["tags"])
     dl = "<dt>勤務地</dt><dd>%s%s%s</dd>" % (e(j["pref"]), e(j["city"]),
                                           "\n最寄り・通勤：" + e(j["access"]).replace("\n", "／") if j["access"] else "")
-    for label, k in (("勤務形態", "shift"), ("勤務時間", "hours"), ("休日", "holiday"), ("寮", "dorm"), ("特典", "bonus")):
-        if j[k]:
+    for label, k in (("雇用形態", "emp"), ("勤務形態", "shift"), ("勤務時間", "hours"), ("休日", "holiday"),
+                     ("寮", "dorm"), ("特典", "bonus")):
+        if j.get(k):
             dl += "<dt>%s</dt><dd>%s</dd>" % (label, e(j[k]))
     body = (
         '<div class="card"><div class="loc">📍 %s%s</div><h1>%s</h1><div class="tags">%s</div><div class="pay">%s</div>'
@@ -414,6 +470,7 @@ def render(jobs, out):
     except Exception:
         posted = {}
     newposted = {}
+    jobs = [j for j in jobs if not j.get("hide")]
     jobs.sort(key=lambda j: -(j["monthly"] or (j["hourly"] or 0) * 168))
     for j in jobs:
         d = posted.get(j["id"]) or TODAY.isoformat()
@@ -472,6 +529,9 @@ def main():
         raw = json.load(open(sys.argv[2], encoding="utf-8"))
         values = raw["values"] if isinstance(raw, dict) else raw
         jobs, skip = sanitize(values)
+        ov = raw.get("overrides", {}) if isinstance(raw, dict) else {}
+        n = apply_overrides(jobs, ov)
+        print("シートでの修正: %d件（うち掲載しない %d件）" % (n, sum(1 for j in jobs if j["hide"])))
         os.makedirs(os.path.dirname(os.path.abspath(sys.argv[3])), exist_ok=True)
         json.dump(jobs, open(sys.argv[3], "w", encoding="utf-8"), ensure_ascii=False, separators=(",", ":"))
         print("載せる求人:", len(jobs), "／ 載せない内訳:", json.dumps(skip, ensure_ascii=False))
@@ -490,9 +550,14 @@ def main():
         d["sample"] = BASE + "job/%s.html" % sorted(new)[0] if new else ""
         json.dump(d, open(sys.argv[3], "w"))
         print("増えた求人 %d件 ／ 終わった求人 %d件" % (len(d["added"]), len(d["removed"])))
+    elif mode == "push":
+        try:
+            push_sheet(json.load(open(sys.argv[2], encoding="utf-8")), os.environ.get("SHEET_URL", ""))
+        except Exception as ex:
+            print("①シートへの書き出しでエラー:", type(ex).__name__, str(ex)[:120])
     elif mode == "render":
         jobs = json.load(open(sys.argv[2], encoding="utf-8"))
-        if len(jobs) < 300:
+        if len([j for j in jobs if not j.get("hide")]) < 300:
             sys.exit("求人が%d件しかありません。データの取り込みに失敗した可能性があるので、公開を止めます。" % len(jobs))
         n, p = render(jobs, sys.argv[3])
         print("求人ページ %d件、都道府県ページ %d件を作りました。" % (n, p))

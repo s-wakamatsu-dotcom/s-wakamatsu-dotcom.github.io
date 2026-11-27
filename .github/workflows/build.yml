@@ -48,6 +48,12 @@ jobs:
           fi
       - name: サイトを作る
         run: python3 build.py render data/jobs.json site
+      - name: サイトに出している内容を①シートへ書き出す（修正用の列はそのまま残る）
+        continue-on-error: true
+        env:
+          SHEET_URL: ${{ secrets.SHEET_URL }}
+        run: |
+          if [ -n "$SHEET_URL" ]; then python3 build.py push data/jobs.json; fi
       - name: 増えた求人・終わった求人を調べる
         run: python3 build.py diff site diff.json
       - uses: actions/upload-artifact@v4

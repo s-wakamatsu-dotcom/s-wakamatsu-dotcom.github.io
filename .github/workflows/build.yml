@@ -1,0 +1,43 @@
+name: 求人ページを毎朝作り直す
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "40 21 * * *"   # 日本時間 6:40
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: 案件一覧を読む（合言葉が設定されているときだけ。なければ data/jobs.json をそのまま使う）
+        env:
+          SHEET_URL: ${{ secrets.SHEET_URL }}
+        run: |
+          if [ -n "$SHEET_URL" ]; then
+            curl -sSL --fail "$SHEET_URL" -o "$RUNNER_TEMP/raw.json"
+            python3 build.py sanitize "$RUNNER_TEMP/raw.json" data/jobs.json
+            rm -f "$RUNNER_TEMP/raw.json"
+          fi
+      - name: サイトを作る
+        run: python3 build.py render data/jobs.json site
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v4
